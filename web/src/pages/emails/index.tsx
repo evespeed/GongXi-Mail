@@ -56,6 +56,9 @@ const MAIL_FETCH_STRATEGY_LABELS: Record<MailFetchStrategy, string> = {
     IMAP_ONLY: '仅 IMAP',
 };
 
+const UNGROUPED_FILTER_VALUE = '__ungrouped__' as const;
+type GroupFilterValue = number | typeof UNGROUPED_FILTER_VALUE;
+
 interface EmailGroup {
     id: number;
     name: string;
@@ -129,6 +132,9 @@ const escapeHtml = (value: string): string =>
 const renderPlainTextEmail = (value: string): string =>
     `<pre style="white-space: pre-wrap; word-break: break-word; margin: 0;">${escapeHtml(value)}</pre>`;
 
+const getSelectedGroupIds = (values: GroupFilterValue[]): number[] =>
+    values.filter((value): value is number => typeof value === 'number');
+
 const copyTextToClipboard = async (text: string) => {
     if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(text);
@@ -159,7 +165,7 @@ const EmailsPage: React.FC = () => {
     const [editingId, setEditingId] = useState<number | null>(null);
     const [keyword, setKeyword] = useState('');
     const [debouncedKeyword, setDebouncedKeyword] = useState('');
-    const [filterGroupId, setFilterGroupId] = useState<number | undefined>(undefined);
+    const [filterGroupValues, setFilterGroupValues] = useState<GroupFilterValue[]>([UNGROUPED_FILTER_VALUE]);
     const [importContent, setImportContent] = useState('');
     const [separator, setSeparator] = useState('----');
     const [importGroupId, setImportGroupId] = useState<number | undefined>(undefined);
@@ -213,8 +219,16 @@ const EmailsPage: React.FC = () => {
     const fetchData = useCallback(async () => {
         const currentRequestId = ++latestListRequestIdRef.current;
         setLoading(true);
-        const params: { page: number; pageSize: number; keyword: string; groupId?: number } = { page, pageSize, keyword: debouncedKeyword };
-        if (filterGroupId !== undefined) params.groupId = filterGroupId;
+        const selectedGroupIds = getSelectedGroupIds(filterGroupValues);
+        const params: {
+            page: number;
+            pageSize: number;
+            keyword: string;
+            groupIds?: string;
+            includeUngrouped?: boolean;
+        } = { page, pageSize, keyword: debouncedKeyword };
+        if (selectedGroupIds.length > 0) params.groupIds = selectedGroupIds.join(',');
+        if (filterGroupValues.includes(UNGROUPED_FILTER_VALUE)) params.includeUngrouped = true;
 
         const result = await requestData<EmailListResult>(
             () => emailApi.getList(params),
@@ -228,7 +242,7 @@ const EmailsPage: React.FC = () => {
             setTotal(result.total);
         }
         setLoading(false);
-    }, [debouncedKeyword, filterGroupId, page, pageSize]);
+    }, [debouncedKeyword, filterGroupValues, page, pageSize]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => {
@@ -391,8 +405,15 @@ const EmailsPage: React.FC = () => {
     const handleExport = async () => {
         try {
             const ids = selectedRowKeys.length > 0 ? selectedRowKeys as number[] : undefined;
-            const groupId = ids ? undefined : toOptionalNumber(filterGroupId);
-            const res = await emailApi.export(ids, separator, groupId);
+            const selectedGroupIds = ids ? [] : getSelectedGroupIds(filterGroupValues);
+            const includeUngrouped = ids ? undefined : filterGroupValues.includes(UNGROUPED_FILTER_VALUE);
+            const res = await emailApi.export(
+                ids,
+                separator,
+                undefined,
+                selectedGroupIds.length > 0 ? selectedGroupIds.join(',') : undefined,
+                includeUngrouped
+            );
             if (res.code !== 200) {
                 message.error(res.message || '导出失败');
                 return;
@@ -572,7 +593,11 @@ const EmailsPage: React.FC = () => {
     const handleBatchRefreshTokens = async () => {
         setBatchRefreshing(true);
         try {
-            const res = await emailApi.refreshTokens(filterGroupId);
+            const selectedGroupIds = getSelectedGroupIds(filterGroupValues);
+            const singleGroupId = selectedGroupIds.length === 1 && !filterGroupValues.includes(UNGROUPED_FILTER_VALUE)
+                ? selectedGroupIds[0]
+                : undefined;
+            const res = await emailApi.refreshTokens(singleGroupId);
             if (res.code === 200) {
                 message.success('批量 Token 刷新任务已启动，请稍后刷新页面查看结果');
             } else {
@@ -913,11 +938,16 @@ const EmailsPage: React.FC = () => {
     );
 
     const groupFilterOptions = useMemo(
-        () =>
-            groups.map((group: EmailGroup) => ({
+        () => [
+            {
+                value: UNGROUPED_FILTER_VALUE,
+                label: '未分组',
+            },
+            ...groups.map((group: EmailGroup) => ({
                 value: group.id,
                 label: `${group.name} (${group.emailCount})`,
             })),
+        ],
         [groups]
     );
 
@@ -1017,11 +1047,13 @@ const EmailsPage: React.FC = () => {
                                         <Select
                                             placeholder="按分组筛选"
                                             allowClear
-                                            style={{ width: 160 }}
-                                            value={filterGroupId}
+                                            mode="multiple"
+                                            maxTagCount="responsive"
+                                            style={{ width: 220 }}
+                                            value={filterGroupValues}
                                             options={groupFilterOptions}
-                                            onChange={(val: number | string | undefined) => {
-                                                setFilterGroupId(toOptionalNumber(val));
+                                            onChange={(vals: GroupFilterValue[]) => {
+                                                setFilterGroupValues(vals);
                                                 setPage(1);
                                             }}
                                         />

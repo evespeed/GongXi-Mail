@@ -1,5 +1,39 @@
 import { z } from 'zod';
 
+function getQueryValueParts(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.flatMap(getQueryValueParts);
+    }
+    if (typeof value === 'string') {
+        return value.split(',');
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return [String(value)];
+    }
+    return [];
+}
+
+const groupIdsQuerySchema = z.preprocess((value) => {
+    if (value === undefined || value === null || value === '') {
+        return undefined;
+    }
+    return getQueryValueParts(value)
+        .map((item) => Number(item))
+        .filter((item) => Number.isFinite(item) && item > 0);
+}, z.array(z.number().int().positive()).optional());
+
+const optionalBooleanQuerySchema = z.preprocess((value) => {
+    if (value === undefined || value === null || value === '') {
+        return undefined;
+    }
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    const [rawValue] = getQueryValueParts(value);
+    const normalized = (rawValue || '').trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}, z.boolean().optional());
+
 export const createEmailSchema = z.object({
     email: z.string().email(),
     clientId: z.string().min(1),
@@ -23,6 +57,8 @@ export const listEmailSchema = z.object({
     status: z.enum(['ACTIVE', 'ERROR', 'DISABLED']).optional(),
     keyword: z.string().optional(),
     groupId: z.coerce.number().int().positive().optional(),
+    groupIds: groupIdsQuerySchema,
+    includeUngrouped: optionalBooleanQuerySchema,
     groupName: z.string().optional(),
 });
 

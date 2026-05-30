@@ -466,7 +466,15 @@ export const apiKeyApi = {
 // ========================================
 
 export const emailApi = {
-    getList: <T = Record<string, unknown>>(params?: { page?: number; pageSize?: number; status?: string; keyword?: string; groupId?: number }) =>
+    getList: <T = Record<string, unknown>>(params?: {
+        page?: number;
+        pageSize?: number;
+        status?: string;
+        keyword?: string;
+        groupId?: number;
+        groupIds?: string;
+        includeUngrouped?: boolean;
+    }) =>
         requestGet<ApiPagedList<T>>('/admin/emails', { params, cacheMs: 800 }),
 
     getById: <T = Record<string, unknown>>(id: number, includeSecrets?: boolean) =>
@@ -490,9 +498,9 @@ export const emailApi = {
             }
         ),
 
-    export: (ids?: number[], separator?: string, groupId?: number) =>
+    export: (ids?: number[], separator?: string, groupId?: number, groupIds?: string, includeUngrouped?: boolean) =>
         requestGet<{ content: string }>('/admin/emails/export', {
-            params: { ids: ids?.join(','), separator, groupId },
+            params: { ids: ids?.join(','), separator, groupId, groupIds, includeUngrouped },
         }),
 
     update: (id: number, data: { email?: string; clientId?: string; refreshToken?: string; password?: string; status?: string; groupId?: number | null }) =>

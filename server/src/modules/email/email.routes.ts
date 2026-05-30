@@ -20,6 +20,19 @@ const mailSyncBodySchema = z.object({
     limit: z.coerce.number().int().min(1).max(200).optional(),
 }).optional();
 
+function getQueryValueParts(value: unknown): string[] {
+    if (Array.isArray(value)) {
+        return value.flatMap(getQueryValueParts);
+    }
+    if (typeof value === 'string') {
+        return value.split(',');
+    }
+    if (typeof value === 'number' || typeof value === 'boolean') {
+        return [String(value)];
+    }
+    return [];
+}
+
 const emailRoutes: FastifyPluginAsync = async (fastify) => {
     // 所有路由需要 JWT 认证
     fastify.addHook('preHandler', fastify.authenticateJwt);
@@ -152,16 +165,43 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
             ids: z.string().optional(),
             separator: z.string().optional(),
             groupId: z.coerce.number().int().positive().optional(),
+            groupIds: z.preprocess((value) => {
+                if (value === undefined || value === null || value === '') {
+                    return undefined;
+                }
+                return getQueryValueParts(value)
+                    .map((item) => Number(item))
+                    .filter((item) => Number.isFinite(item) && item > 0);
+            }, z.array(z.number().int().positive()).optional()),
+            includeUngrouped: z.preprocess((value) => {
+                if (value === undefined || value === null || value === '') {
+                    return undefined;
+                }
+                if (typeof value === 'boolean') {
+                    return value;
+                }
+                const [rawValue] = getQueryValueParts(value);
+                const normalized = (rawValue || '').trim().toLowerCase();
+                return normalized === 'true' || normalized === '1' || normalized === 'yes';
+            }, z.boolean().optional()),
         }).parse(request.query);
 
         const idArray = query.ids?.split(',').map(Number).filter((id: number) => Number.isFinite(id) && id > 0);
-        const content = await emailService.export(idArray, query.separator, query.groupId);
+        const content = await emailService.export(
+            idArray,
+            query.separator,
+            query.groupId,
+            query.groupIds,
+            query.includeUngrouped
+        );
         request.log.info({
             systemEvent: true,
             action: 'email.export',
             actorId: request.user?.id ?? null,
             actorUsername: request.user?.username ?? null,
             groupId: query.groupId ?? null,
+            groupIds: query.groupIds ?? null,
+            includeUngrouped: query.includeUngrouped ?? null,
             emailCount: idArray?.length ?? null,
         }, '导出邮箱');
         return { success: true, data: { content } };

@@ -6,12 +6,43 @@ import type { CreateEmailInput, UpdateEmailInput, ListEmailInput, ImportEmailInp
 
 const DEFAULT_MAIL_FETCH_STRATEGY = 'IMAP_FIRST';
 
+function applyGroupFilter(
+    where: Prisma.EmailAccountWhereInput,
+    input: {
+        groupId?: number;
+        groupIds?: number[];
+        includeUngrouped?: boolean;
+        groupName?: string;
+    }
+) {
+    const groupIds = input.groupIds?.length ? Array.from(new Set(input.groupIds)) : [];
+    const groupFilters: Prisma.EmailAccountWhereInput[] = [];
+
+    if (groupIds.length > 0) {
+        groupFilters.push({ groupId: { in: groupIds } });
+    } else if (input.groupId) {
+        groupFilters.push({ groupId: input.groupId });
+    }
+
+    if (input.includeUngrouped) {
+        groupFilters.push({ groupId: null });
+    }
+
+    if (groupFilters.length === 1) {
+        Object.assign(where, groupFilters[0]);
+    } else if (groupFilters.length > 1) {
+        where.OR = groupFilters;
+    } else if (input.groupName) {
+        where.group = { name: input.groupName };
+    }
+}
+
 export const emailService = {
     /**
      * 获取邮箱列表
      */
     async list(input: ListEmailInput) {
-        const { page, pageSize, status, keyword, groupId, groupName } = input;
+        const { page, pageSize, status, keyword } = input;
         const skip = (page - 1) * pageSize;
 
         const where: Prisma.EmailAccountWhereInput = {};
@@ -19,11 +50,7 @@ export const emailService = {
         if (keyword) {
             where.email = { contains: keyword };
         }
-        if (groupId) {
-            where.groupId = groupId;
-        } else if (groupName) {
-            where.group = { name: groupName };
-        }
+        applyGroupFilter(where, input);
 
         const [list, total] = await Promise.all([
             prisma.emailAccount.findMany({
@@ -356,14 +383,18 @@ export const emailService = {
     /**
      * 导出
      */
-    async export(ids?: number[], separator = '----', groupId?: number) {
+    async export(
+        ids?: number[],
+        separator = '----',
+        groupId?: number,
+        groupIds?: number[],
+        includeUngrouped?: boolean
+    ) {
         const where: Prisma.EmailAccountWhereInput = {};
         if (ids?.length) {
             where.id = { in: ids };
         }
-        if (groupId !== undefined) {
-            where.groupId = groupId;
-        }
+        applyGroupFilter(where, { groupId, groupIds, includeUngrouped });
 
         const accounts = await prisma.emailAccount.findMany({
             where,
