@@ -86,6 +86,9 @@ model EmailAccount {
   groupId      Int?        @map("group_id")
   lastCheckAt  DateTime?   @map("last_check_at")
   tokenRefreshedAt DateTime? @map("token_refreshed_at")
+  lastVerificationCode String? @map("last_verification_code") @db.VarChar(6)
+  lastVerificationMailAt DateTime? @map("last_verification_mail_at")
+  lastVerificationCheckedAt DateTime? @map("last_verification_checked_at")
   errorMessage String?     @map("error_message") @db.Text
   createdAt    DateTime    @default(now()) @map("created_at")
   updatedAt    DateTime    @updatedAt @map("updated_at")

@@ -543,6 +543,32 @@ export const emailApi = {
     getMailDetail: <T = Record<string, unknown>>(id: number, mailId: number) =>
         requestGet<T>(`/admin/emails/${id}/mails/${mailId}`),
 
+    // 检查最新邮件中的验证码/禁用通知
+    checkVerification: (id: number) =>
+        requestPost<{
+            status: 'DEACTIVATED' | 'CODE_FOUND' | 'NO_CODE';
+            emailId: number;
+            email: string;
+            code: string | null;
+            mailSentAt: string | null;
+            matchedSubject: string | null;
+            checkedAt: string;
+            disabledGroup?: { id: number; name: string };
+            sync: {
+                fetched: number;
+                inserted: number;
+                updated: number;
+                method: string;
+            };
+        }>(
+            `/admin/emails/${id}/check-verification`,
+            undefined,
+            {
+                timeout: 60000,
+                invalidatePrefixes: [`/admin/emails/${id}/mails`, '/admin/emails', '/admin/email-groups'],
+            }
+        ),
+
     // 清空邮箱 (管理员专用)
     clearMailbox: (id: number, mailbox?: string) =>
         requestPost<{ deletedCount: number }, { mailbox?: string }>(`/admin/emails/${id}/clear`, {

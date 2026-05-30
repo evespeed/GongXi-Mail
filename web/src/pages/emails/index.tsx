@@ -30,6 +30,7 @@ import {
     MailOutlined,
     GroupOutlined,
     SyncOutlined,
+    CheckCircleOutlined,
 } from '@ant-design/icons';
 import { emailApi, groupApi } from '../../api';
 import { getErrorMessage } from '../../utils/error';
@@ -74,6 +75,9 @@ interface EmailAccount {
     group: { id: number; name: string } | null;
     lastCheckAt: string | null;
     tokenRefreshedAt: string | null;
+    lastVerificationCode: string | null;
+    lastVerificationMailAt: string | null;
+    lastVerificationCheckedAt: string | null;
     errorMessage: string | null;
     createdAt: string;
 }
@@ -125,6 +129,23 @@ const escapeHtml = (value: string): string =>
 const renderPlainTextEmail = (value: string): string =>
     `<pre style="white-space: pre-wrap; word-break: break-word; margin: 0;">${escapeHtml(value)}</pre>`;
 
+const copyTextToClipboard = async (text: string) => {
+    if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+        return;
+    }
+
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    document.execCommand('copy');
+    document.body.removeChild(textarea);
+};
+
 const EmailsPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState<EmailAccount[]>([]);
@@ -166,6 +187,7 @@ const EmailsPage: React.FC = () => {
     const [assignGroupModalVisible, setAssignGroupModalVisible] = useState(false);
     const [assignTargetGroupId, setAssignTargetGroupId] = useState<number | undefined>(undefined);
     const [refreshingTokenIds, setRefreshingTokenIds] = useState<Set<number>>(new Set());
+    const [checkingEmailIds, setCheckingEmailIds] = useState<Set<number>>(new Set());
     const [batchRefreshing, setBatchRefreshing] = useState(false);
     const latestListRequestIdRef = useRef(0);
 
@@ -507,6 +529,46 @@ const EmailsPage: React.FC = () => {
         }
     }, [fetchData]);
 
+    const handleCheckVerification = useCallback(async (record: EmailAccount) => {
+        setCheckingEmailIds(prev => new Set(prev).add(record.id));
+        try {
+            const res = await emailApi.checkVerification(record.id);
+            if (res.code !== 200 || !res.data) {
+                message.error(res.message || '检查失败');
+                return;
+            }
+
+            if (res.data.status === 'DEACTIVATED') {
+                message.warning(`${record.email} 已被禁用，已加入“禁用”分组`);
+                fetchData();
+                fetchGroups();
+                return;
+            }
+
+            if (res.data.status === 'CODE_FOUND' && res.data.code) {
+                try {
+                    await copyTextToClipboard(res.data.code);
+                    message.success(`验证码 ${res.data.code} 已复制到剪切板`);
+                } catch {
+                    message.warning(`验证码 ${res.data.code} 已识别，复制到剪切板失败`);
+                }
+                fetchData();
+                return;
+            }
+
+            message.warning('最后一封邮件未匹配到验证码');
+            fetchData();
+        } catch (err: unknown) {
+            message.error(getErrorMessage(err, '检查失败或已超时'));
+        } finally {
+            setCheckingEmailIds(prev => {
+                const next = new Set(prev);
+                next.delete(record.id);
+                return next;
+            });
+        }
+    }, [fetchData, fetchGroups]);
+
     const handleBatchRefreshTokens = async () => {
         setBatchRefreshing(true);
         try {
@@ -704,6 +766,27 @@ const EmailsPage: React.FC = () => {
             render: (val: string | null) => (val ? dayjs(val).format('YYYY-MM-DD HH:mm') : '-'),
         },
         {
+            title: '验证码',
+            key: 'verification',
+            width: 180,
+            render: (_: unknown, record: EmailAccount) => (
+                <Space direction="vertical" size={0}>
+                    {record.lastVerificationCode ? (
+                        <Typography.Text code>{record.lastVerificationCode}</Typography.Text>
+                    ) : (
+                        <Typography.Text type="secondary">-</Typography.Text>
+                    )}
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {record.lastVerificationMailAt
+                            ? `发送：${dayjs(record.lastVerificationMailAt).format('YYYY-MM-DD HH:mm')}`
+                            : record.lastVerificationCheckedAt
+                                ? `检查：${dayjs(record.lastVerificationCheckedAt).format('YYYY-MM-DD HH:mm')}`
+                                : ''}
+                    </Typography.Text>
+                </Space>
+            ),
+        },
+        {
             title: '创建时间',
             dataIndex: 'createdAt',
             key: 'createdAt',
@@ -713,59 +796,79 @@ const EmailsPage: React.FC = () => {
         {
             title: '操作',
             key: 'action',
-            width: 240,
-            render: (_: unknown, record: EmailAccount) => (
-                <Space>
-                    <Tooltip title="刷新 Token">
-                        <Button
-                            type="text"
-                            icon={<SyncOutlined spin={refreshingTokenIds.has(record.id)} />}
-                            onClick={() => handleRefreshToken(record)}
-                            disabled={refreshingTokenIds.has(record.id) || record.status === 'DISABLED'}
-                        />
-                    </Tooltip>
-                    <Tooltip title="收件箱">
-                        <Button
-                            type="text"
-                            icon={<MailOutlined />}
-                            onClick={() => handleViewMails(record, 'INBOX')}
-                            disabled={mailLoading || record.status === 'DISABLED'}
-                        />
-                    </Tooltip>
-                    <Tooltip title="垃圾箱">
-                        <Button
-                            type="text"
-                            icon={<DeleteOutlined style={{ color: '#faad14' }} />}
-                            onClick={() => handleViewMails(record, 'Junk')}
-                            disabled={mailLoading || record.status === 'DISABLED'}
-                        />
-                    </Tooltip>
-                    <Tooltip title="编辑">
-                        <Button
-                            type="text"
-                            icon={<EditOutlined />}
-                            onClick={() => handleEdit(record)}
-                        />
-                    </Tooltip>
-                    <Tooltip title="删除">
-                        <Popconfirm
-                            title="确定要删除此邮箱吗？"
-                            onConfirm={() => handleDelete(record.id)}
-                        >
-                            <Button type="text" danger icon={<DeleteOutlined />} />
-                        </Popconfirm>
-                    </Tooltip>
-                </Space>
-            ),
+            width: 280,
+            render: (_: unknown, record: EmailAccount) => {
+                const isChecking = checkingEmailIds.has(record.id);
+                const isRefreshing = refreshingTokenIds.has(record.id);
+                const rowBusy = isChecking || isRefreshing;
+                const disabled = rowBusy || record.status === 'DISABLED';
+
+                return (
+                    <Space>
+                        <Tooltip title="检查验证码">
+                            <Button
+                                type="text"
+                                icon={<CheckCircleOutlined spin={isChecking} />}
+                                onClick={() => handleCheckVerification(record)}
+                                disabled={disabled}
+                            />
+                        </Tooltip>
+                        <Tooltip title="刷新 Token">
+                            <Button
+                                type="text"
+                                icon={<SyncOutlined spin={isRefreshing} />}
+                                onClick={() => handleRefreshToken(record)}
+                                disabled={disabled}
+                            />
+                        </Tooltip>
+                        <Tooltip title="收件箱">
+                            <Button
+                                type="text"
+                                icon={<MailOutlined />}
+                                onClick={() => handleViewMails(record, 'INBOX')}
+                                disabled={disabled || mailLoading}
+                            />
+                        </Tooltip>
+                        <Tooltip title="垃圾箱">
+                            <Button
+                                type="text"
+                                icon={<DeleteOutlined style={{ color: '#faad14' }} />}
+                                onClick={() => handleViewMails(record, 'Junk')}
+                                disabled={disabled || mailLoading}
+                            />
+                        </Tooltip>
+                        <Tooltip title="编辑">
+                            <Button
+                                type="text"
+                                icon={<EditOutlined />}
+                                onClick={() => handleEdit(record)}
+                                disabled={rowBusy}
+                            />
+                        </Tooltip>
+                        <Tooltip title="删除">
+                            <Popconfirm
+                                title="确定要删除此邮箱吗？"
+                                onConfirm={() => handleDelete(record.id)}
+                                disabled={rowBusy}
+                            >
+                                <Button type="text" danger icon={<DeleteOutlined />} disabled={rowBusy} />
+                            </Popconfirm>
+                        </Tooltip>
+                    </Space>
+                );
+            },
         },
-    ], [handleDelete, handleEdit, handleRefreshToken, handleViewMails, mailLoading, refreshingTokenIds]);
+    ], [checkingEmailIds, handleCheckVerification, handleDelete, handleEdit, handleRefreshToken, handleViewMails, mailLoading, refreshingTokenIds]);
 
     const rowSelection = useMemo(
         () => ({
             selectedRowKeys,
             onChange: setSelectedRowKeys,
+            getCheckboxProps: (record: EmailAccount) => ({
+                disabled: checkingEmailIds.has(record.id),
+            }),
         }),
-        [selectedRowKeys]
+        [checkingEmailIds, selectedRowKeys]
     );
 
     const tablePagination = useMemo(

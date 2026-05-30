@@ -1,6 +1,7 @@
 import { type FastifyPluginAsync } from 'fastify';
 import { emailService } from './email.service.js';
 import { mailCacheService } from './mail-cache.service.js';
+import { verificationCheckService } from './verification-check.service.js';
 import { mailService } from '../mail/mail.service.js';
 import { tokenRefreshService } from './token-refresh.service.js';
 import { createEmailSchema, updateEmailSchema, listEmailSchema, importEmailSchema } from './email.schema.js';
@@ -203,6 +204,25 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.get('/:id/mails/:mailId', async (request) => {
         const { id, mailId } = request.params as { id: string; mailId: string };
         const result = await mailCacheService.getMailDetail(parseInt(id), parseInt(mailId));
+        return { success: true, data: result };
+    });
+
+    // 检查最新邮件中的验证码/禁用通知 (管理员专用)
+    fastify.post('/:id/check-verification', async (request) => {
+        const { id } = request.params as { id: string };
+        const result = await verificationCheckService.check(parseInt(id));
+        request.log.info({
+            systemEvent: true,
+            action: 'email.check_verification',
+            actorId: request.user?.id ?? null,
+            actorUsername: request.user?.username ?? null,
+            emailId: result.emailId,
+            email: result.email,
+            status: result.status,
+            hasCode: !!result.code,
+            inserted: result.sync.inserted,
+            updated: result.sync.updated,
+        }, '检查邮箱验证码');
         return { success: true, data: result };
     });
 
