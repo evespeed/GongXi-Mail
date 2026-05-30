@@ -260,6 +260,7 @@ export const emailService = {
         let success = 0;
         let failed = 0;
         const errors: string[] = [];
+        const importedIds = new Set<number>();
 
         for (const line of lines) {
             try {
@@ -310,10 +311,12 @@ export const emailService = {
                 const exists = await prisma.emailAccount.findUnique({ where: { email } });
                 if (exists) {
                     // 更新
-                    await prisma.emailAccount.update({
+                    const account = await prisma.emailAccount.update({
                         where: { email },
                         data,
+                        select: { id: true },
                     });
+                    importedIds.add(account.id);
                 } else {
                     // 创建
                     const createData: Prisma.EmailAccountUncheckedCreateInput = {
@@ -328,9 +331,11 @@ export const emailService = {
                     if (groupId !== undefined) {
                         createData.groupId = groupId;
                     }
-                    await prisma.emailAccount.create({
+                    const account = await prisma.emailAccount.create({
                         data: createData,
+                        select: { id: true },
                     });
+                    importedIds.add(account.id);
                 }
                 success++;
             } catch (err) {
@@ -339,7 +344,7 @@ export const emailService = {
             }
         }
 
-        return { success, failed, errors };
+        return { success, failed, errors, importedIds: Array.from(importedIds) };
     },
 
     /**

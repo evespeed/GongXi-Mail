@@ -8,6 +8,7 @@ import prisma from '../../lib/prisma.js';
 import type { MailRequestInput } from './mail.schema.js';
 import Imap from 'node-imap';
 import { simpleParser, type ParsedMail, type Source } from 'mailparser';
+import { createHash } from 'crypto';
 
 type MailFetchStrategy = 'GRAPH_FIRST' | 'IMAP_FIRST' | 'GRAPH_ONLY' | 'IMAP_ONLY';
 const DEFAULT_MAIL_FETCH_STRATEGY: MailFetchStrategy = 'IMAP_FIRST';
@@ -41,6 +42,7 @@ interface MailFetchResult {
 interface GetEmailsOptions {
     mailbox: string;
     limit?: number;
+    since?: Date;
     socks5?: string;
     http?: string;
 }
@@ -64,6 +66,7 @@ interface GraphMessage {
         content?: string;
     };
     createdDateTime?: string;
+    receivedDateTime?: string;
 }
 
 interface GraphMessagesResponse {
@@ -86,6 +89,7 @@ function buildEmailFetchKey(
         limit,
         options.socks5 || '',
         options.http || '',
+        options.since?.toISOString() || '',
     ].join('|');
 }
 
@@ -95,6 +99,31 @@ function getErrorMessage(error: unknown): string {
     }
     const message = (error as { message?: unknown }).message;
     return typeof message === 'string' && message.trim() ? message : 'Unknown error';
+}
+
+function buildStableImapMessageId(email: string, mailbox: string, mail: ParsedMail, sequence: number): string {
+    const messageId = typeof mail.messageId === 'string' ? mail.messageId.trim() : '';
+    if (messageId) {
+        return messageId.length <= 255
+            ? messageId
+            : `imap_${createHash('sha256').update(messageId).digest('hex')}`;
+    }
+
+    const raw = [
+        email.toLowerCase(),
+        mailbox.toLowerCase(),
+        mail.date?.toISOString() || '',
+        mail.from?.text || '',
+        mail.subject || '',
+        sequence,
+    ].join('|');
+
+    return `imap_${createHash('sha256').update(raw).digest('hex')}`;
+}
+
+function formatImapDate(date: Date): string {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getUTCDate()}-${months[date.getUTCMonth()]}-${date.getUTCFullYear()}`;
 }
 
 export const mailService = {
@@ -254,6 +283,7 @@ export const mailService = {
         accessToken: string,
         mailbox: string,
         limit: number = 100,
+        since?: Date,
         proxyConfig?: { socks5?: string; http?: string }
     ): Promise<EmailMessage[]> {
         // 转换邮箱名称
@@ -265,8 +295,16 @@ export const mailService = {
         }
 
         try {
+            const searchParams = new URLSearchParams({
+                '$top': String(limit),
+                '$orderby': 'receivedDateTime desc',
+            });
+            if (since) {
+                searchParams.set('$filter', `receivedDateTime ge ${since.toISOString()}`);
+            }
+
             const response = await proxyFetch(
-                `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?$top=${limit}&$orderby=receivedDateTime desc`,
+                `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages?${searchParams.toString()}`,
                 {
                     method: 'GET',
                     headers: {
@@ -291,7 +329,7 @@ export const mailService = {
                 subject: item.subject || '',
                 text: item.bodyPreview || '',
                 html: item.body?.content || '',
-                date: item.createdDateTime || '',
+                date: item.receivedDateTime || item.createdDateTime || '',
             }));
         } catch (err) {
             logger.error({ err }, 'Failed to fetch emails via Graph API');
@@ -370,7 +408,8 @@ export const mailService = {
         email: string,
         authString: string,
         mailbox: string = 'INBOX',
-        limit: number = 100
+        limit: number = 100,
+        since?: Date
     ): Promise<EmailMessage[]> {
         return new Promise((resolve, reject) => {
             const imapConfig: ConstructorParameters<typeof Imap>[0] = {
@@ -399,7 +438,8 @@ export const mailService = {
                         });
                     });
 
-                    imap.search(['ALL'], (err: Error | null, results: number[]) => {
+                    const criteria = since ? [['SINCE', formatImapDate(since)]] : ['ALL'];
+                    imap.search(criteria as unknown as Parameters<typeof imap.search>[0], (err: Error | null, results: number[]) => {
                         if (err) {
                             imap.end();
                             return reject(err);
@@ -422,7 +462,7 @@ export const mailService = {
                                     .then((mail: ParsedMail) => {
                                         const html = typeof mail.html === 'string' ? mail.html : '';
                                         emailList.push({
-                                            id: `imap_${Date.now()}_${processedCount}`,
+                                            id: buildStableImapMessageId(email, mailbox, mail, processedCount),
                                             from: mail.from?.text || '',
                                             subject: mail.subject || '',
                                             text: mail.text || '',
@@ -513,6 +553,7 @@ export const mailService = {
                 tokenResult.accessToken,
                 options.mailbox,
                 limit,
+                options.since,
                 proxyConfig
             );
 
@@ -537,7 +578,8 @@ export const mailService = {
                 credentials.email,
                 authString,
                 options.mailbox,
-                limit
+                limit,
+                options.since
             );
 
             return {
@@ -621,6 +663,7 @@ export const mailService = {
                     tokenResult.accessToken,
                     options.mailbox,
                     500, // 每次取 500
+                    undefined,
                     proxyConfig
                 );
 

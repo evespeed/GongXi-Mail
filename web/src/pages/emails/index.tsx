@@ -16,6 +16,7 @@ import {
     List,
     Tabs,
     Spin,
+    Pagination,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import {
@@ -83,17 +84,46 @@ interface EmailListResult {
 }
 
 interface MailItem {
-    id: string;
-    from: string;
-    subject: string;
-    text: string;
-    html: string;
-    date: string;
+    id: number;
+    mailbox: string;
+    providerMessageId: string;
+    from: string | null;
+    subject: string | null;
+    bodyPreview: string | null;
+    sentAt: string | null;
+    receivedAt: string | null;
+    firstFetchedAt: string;
+    lastFetchedAt: string;
+    isNew: boolean;
+}
+
+interface MailListResult {
+    mailbox: string;
+    page: number;
+    pageSize: number;
+    total: number;
+    messages: MailItem[];
+}
+
+interface MailDetail extends MailItem {
+    text: string | null;
+    html: string | null;
 }
 
 interface EmailDetailsResult extends EmailAccount {
     refreshToken: string;
 }
+
+const escapeHtml = (value: string): string =>
+    value
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+
+const renderPlainTextEmail = (value: string): string =>
+    `<pre style="white-space: pre-wrap; word-break: break-word; margin: 0;">${escapeHtml(value)}</pre>`;
 
 const EmailsPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
@@ -113,6 +143,9 @@ const EmailsPage: React.FC = () => {
     const [separator, setSeparator] = useState('----');
     const [importGroupId, setImportGroupId] = useState<number | undefined>(undefined);
     const [mailList, setMailList] = useState<MailItem[]>([]);
+    const [mailTotal, setMailTotal] = useState(0);
+    const [mailPage, setMailPage] = useState(1);
+    const [mailPageSize, setMailPageSize] = useState(10);
     const [mailLoading, setMailLoading] = useState(false);
     const mailLoadingRef = useRef(false);
     const [currentEmail, setCurrentEmail] = useState<string>('');
@@ -121,6 +154,7 @@ const EmailsPage: React.FC = () => {
     const [emailDetailVisible, setEmailDetailVisible] = useState(false);
     const [emailDetailContent, setEmailDetailContent] = useState<string>('');
     const [emailDetailSubject, setEmailDetailSubject] = useState<string>('');
+    const [emailDetailLoading, setEmailDetailLoading] = useState(false);
     const [emailEditLoading, setEmailEditLoading] = useState(false);
     const [form] = Form.useForm();
 
@@ -315,7 +349,10 @@ const EmailsPage: React.FC = () => {
                 toOptionalNumber(importGroupId)
             );
             if (res.code === 200) {
-                message.success(res.message);
+                const syncQueued = Number((res.data as { syncQueued?: number } | undefined)?.syncQueued || 0);
+                message.success(syncQueued > 0
+                    ? `导入成功，已排队预拉取 ${syncQueued} 个邮箱`
+                    : '导入成功');
                 setImportModalVisible(false);
                 setImportContent('');
                 setImportGroupId(undefined);
@@ -354,7 +391,13 @@ const EmailsPage: React.FC = () => {
         }
     };
 
-    const loadMails = useCallback(async (emailId: number, mailbox: string, showSuccessToast: boolean = false) => {
+    const loadMails = useCallback(async (
+        emailId: number,
+        mailbox: string,
+        showSuccessToast: boolean = false,
+        nextPage: number = 1,
+        nextPageSize: number = 10
+    ) => {
         if (mailLoadingRef.current) {
             return;
         }
@@ -362,22 +405,24 @@ const EmailsPage: React.FC = () => {
         mailLoadingRef.current = true;
         setMailLoading(true);
         try {
-            const result = await requestData<{ messages: MailItem[] }>(
-                () => emailApi.viewMails(emailId, mailbox),
+            const result = await requestData<MailListResult>(
+                () => emailApi.viewMails<MailItem>(emailId, mailbox, { page: nextPage, pageSize: nextPageSize }),
                 '获取邮件失败'
             );
             if (result) {
                 setMailList(result.messages || []);
-                fetchData();
+                setMailTotal(result.total || 0);
+                setMailPage(result.page || nextPage);
+                setMailPageSize(result.pageSize || nextPageSize);
                 if (showSuccessToast) {
-                    message.success('刷新成功');
+                    message.success('本地邮件列表已刷新');
                 }
             }
         } finally {
             mailLoadingRef.current = false;
             setMailLoading(false);
         }
-    }, [fetchData]);
+    }, []);
 
     const handleViewMails = useCallback(async (record: EmailAccount, mailbox: string) => {
         if (mailLoadingRef.current) {
@@ -387,13 +432,37 @@ const EmailsPage: React.FC = () => {
         setCurrentEmail(record.email);
         setCurrentEmailId(record.id);
         setCurrentMailbox(mailbox);
+        setMailList([]);
+        setMailTotal(0);
+        setMailPage(1);
+        setMailPageSize(10);
         setMailModalVisible(true);
-        await loadMails(record.id, mailbox);
+        await loadMails(record.id, mailbox, false, 1, 10);
     }, [loadMails]);
 
     const handleRefreshMails = async () => {
         if (!currentEmailId || mailLoadingRef.current) return;
-        await loadMails(currentEmailId, currentMailbox, true);
+        mailLoadingRef.current = true;
+        setMailLoading(true);
+        try {
+            const result = await requestData<{
+                fetched: number;
+                inserted: number;
+                updated: number;
+                method: string;
+            }>(
+                () => emailApi.syncMails(currentEmailId, currentMailbox),
+                '拉取最新邮件失败'
+            );
+            if (result) {
+                message.success(`拉取完成：新增 ${result.inserted} 封，更新 ${result.updated} 封`);
+                fetchData();
+            }
+        } finally {
+            mailLoadingRef.current = false;
+            setMailLoading(false);
+        }
+        await loadMails(currentEmailId, currentMailbox, false, 1, mailPageSize);
     };
 
     const handleClearMailbox = async () => {
@@ -403,6 +472,8 @@ const EmailsPage: React.FC = () => {
             if (res.code === 200) {
                 message.success(`已清空 ${res.data?.deletedCount || 0} 封邮件`);
                 setMailList([]);
+                setMailTotal(0);
+                setMailPage(1);
                 fetchData();
             } else {
                 message.error(res.message || '清空失败');
@@ -452,10 +523,24 @@ const EmailsPage: React.FC = () => {
         }
     };
 
-    const handleViewEmailDetail = (record: MailItem) => {
+    const handleViewEmailDetail = async (record: MailItem) => {
+        if (!currentEmailId) return;
         setEmailDetailSubject(record.subject || '无主题');
-        setEmailDetailContent(record.html || record.text || '无内容');
+        setEmailDetailContent(renderPlainTextEmail('加载中...'));
         setEmailDetailVisible(true);
+        setEmailDetailLoading(true);
+        try {
+            const result = await requestData<MailDetail>(
+                () => emailApi.getMailDetail<MailDetail>(currentEmailId, record.id),
+                '获取邮件详情失败'
+            );
+            if (result) {
+                setEmailDetailSubject(result.subject || '无主题');
+                setEmailDetailContent(result.html || renderPlainTextEmail(result.text || '无内容'));
+            }
+        } finally {
+            setEmailDetailLoading(false);
+        }
     };
 
     // ========================================
@@ -1039,7 +1124,7 @@ const EmailsPage: React.FC = () => {
                 >
                     <Space style={{ marginBottom: 16 }}>
                         <Button type="primary" onClick={handleRefreshMails} loading={mailLoading} disabled={mailLoading}>
-                            收取新邮件
+                            拉取最新邮件
                         </Button>
                         <Popconfirm
                             title={`确定要清空${currentMailbox === 'INBOX' ? '收件箱' : '垃圾箱'}的所有邮件吗？`}
@@ -1048,20 +1133,13 @@ const EmailsPage: React.FC = () => {
                             <Button danger disabled={mailLoading}>清空</Button>
                         </Popconfirm>
                         <span style={{ marginLeft: 16, color: '#888' }}>
-                            共 {mailList.length} 封邮件
+                            本地共 {mailTotal} 封邮件
                         </span>
                     </Space>
                     <List
                         loading={mailLoading}
                         dataSource={mailList}
                         itemLayout="horizontal"
-                        pagination={{
-                            pageSize: 10,
-                            showSizeChanger: true,
-                            showQuickJumper: true,
-                            showTotal: (total: number) => `共 ${total} 条`,
-                            style: { marginTop: 16 },
-                        }}
                         style={{ maxHeight: 450, overflow: 'auto' }}
                         renderItem={(item: MailItem) => (
                             <List.Item
@@ -1078,22 +1156,49 @@ const EmailsPage: React.FC = () => {
                             >
                                 <List.Item.Meta
                                     title={
-                                        <Typography.Text ellipsis style={{ maxWidth: 600 }}>
-                                            {item.subject || '(无主题)'}
-                                        </Typography.Text>
+                                        <Space>
+                                            {item.isNew && <Tag color="green">新拉取</Tag>}
+                                            <Typography.Text ellipsis style={{ maxWidth: 620 }}>
+                                                {item.subject || '(无主题)'}
+                                            </Typography.Text>
+                                        </Space>
                                     }
                                     description={
-                                        <Space size="large">
-                                            <span style={{ color: '#1890ff' }}>{item.from || '未知发件人'}</span>
-                                            <span style={{ color: '#999' }}>
-                                                {item.date ? dayjs(item.date).format('YYYY-MM-DD HH:mm') : '-'}
-                                            </span>
+                                        <Space direction="vertical" size={4}>
+                                            <Space size="large" wrap>
+                                                <span style={{ color: '#1890ff' }}>{item.from || '未知发件人'}</span>
+                                                <span style={{ color: '#999' }}>
+                                                    发送：{item.sentAt ? dayjs(item.sentAt).format('YYYY-MM-DD HH:mm') : '-'}
+                                                </span>
+                                                <span style={{ color: '#999' }}>
+                                                    拉取：{item.lastFetchedAt ? dayjs(item.lastFetchedAt).format('YYYY-MM-DD HH:mm') : '-'}
+                                                </span>
+                                            </Space>
+                                            <Typography.Text type="secondary" ellipsis style={{ maxWidth: 760 }}>
+                                                {item.bodyPreview || '无摘要'}
+                                            </Typography.Text>
                                         </Space>
                                     }
                                 />
                             </List.Item>
                         )}
                     />
+                    {mailTotal > 0 && (
+                        <Pagination
+                            current={mailPage}
+                            pageSize={mailPageSize}
+                            total={mailTotal}
+                            showSizeChanger
+                            showQuickJumper
+                            showTotal={(count: number) => `共 ${count} 条`}
+                            style={{ marginTop: 16, textAlign: 'right' }}
+                            onChange={(nextPage: number, nextPageSize: number) => {
+                                if (currentEmailId) {
+                                    loadMails(currentEmailId, currentMailbox, false, nextPage, nextPageSize);
+                                }
+                            }}
+                        />
+                    )}
                 </Modal>
             )}
 
@@ -1108,18 +1213,20 @@ const EmailsPage: React.FC = () => {
                     width={900}
                     styles={{ body: { padding: '16px 24px' } }}
                 >
-                    <iframe
-                        title="email-content"
-                        sandbox="allow-same-origin"
-                        srcDoc={emailDetailSrcDoc}
-                        style={{
-                            width: '100%',
-                            height: 'calc(100vh - 300px)',
-                            border: '1px solid #eee',
-                            borderRadius: '8px',
-                            backgroundColor: '#fafafa',
-                        }}
-                    />
+                    <Spin spinning={emailDetailLoading}>
+                        <iframe
+                            title="email-content"
+                            sandbox="allow-same-origin"
+                            srcDoc={emailDetailSrcDoc}
+                            style={{
+                                width: '100%',
+                                height: 'calc(100vh - 300px)',
+                                border: '1px solid #eee',
+                                borderRadius: '8px',
+                                backgroundColor: '#fafafa',
+                            }}
+                        />
+                    </Spin>
                 </Modal>
             )}
 

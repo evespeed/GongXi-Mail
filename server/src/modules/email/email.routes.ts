@@ -1,11 +1,23 @@
 import { type FastifyPluginAsync } from 'fastify';
 import { emailService } from './email.service.js';
+import { mailCacheService } from './mail-cache.service.js';
 import { mailService } from '../mail/mail.service.js';
 import { tokenRefreshService } from './token-refresh.service.js';
 import { createEmailSchema, updateEmailSchema, listEmailSchema, importEmailSchema } from './email.schema.js';
 import { z } from 'zod';
 import { AppError } from '../../plugins/error.js';
 import { getTokenRefreshJobNextRunAt, refreshTokenRefreshJobSchedule } from '../../jobs/token-refresh.js';
+
+const mailListQuerySchema = z.object({
+    mailbox: z.string().optional(),
+    page: z.coerce.number().int().positive().optional(),
+    pageSize: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+const mailSyncBodySchema = z.object({
+    mailbox: z.string().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+}).optional();
 
 const emailRoutes: FastifyPluginAsync = async (fastify) => {
     // 所有路由需要 JWT 认证
@@ -91,6 +103,34 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
     fastify.post('/import', async (request) => {
         const input = importEmailSchema.parse(request.body);
         const result = await emailService.import(input);
+        const log = request.log;
+
+        if (result.importedIds.length > 0) {
+            void mailCacheService.syncManyMailboxes(result.importedIds, {
+                mailboxes: ['INBOX', 'Junk'],
+                limit: 100,
+                concurrency: 2,
+                trigger: 'IMPORT',
+                markInsertedAsNew: false,
+            }).then((syncResult) => {
+                log.info({
+                    systemEvent: true,
+                    action: 'email.import_mail_prefetch_completed',
+                    importedCount: result.importedIds.length,
+                    totalTasks: syncResult.totalTasks,
+                    success: syncResult.success,
+                    failed: syncResult.failed,
+                }, '导入后后台预拉取邮件完成');
+            }).catch((err) => {
+                log.error({
+                    err,
+                    systemEvent: true,
+                    action: 'email.import_mail_prefetch_failed',
+                    importedCount: result.importedIds.length,
+                }, '导入后后台预拉取邮件失败');
+            });
+        }
+
         request.log.info({
             systemEvent: true,
             action: 'email.import',
@@ -100,8 +140,9 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
             success: result.success,
             failed: result.failed,
             errorCount: result.errors.length,
+            syncQueued: result.importedIds.length,
         }, '批量导入邮箱');
-        return { success: true, data: result };
+        return { success: true, data: { ...result, syncQueued: result.importedIds.length } };
     });
 
     // 导出
@@ -128,22 +169,41 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
     // 查看邮件 (管理员专用)
     fastify.get('/:id/mails', async (request) => {
         const { id } = request.params as { id: string };
-        const { mailbox } = request.query as { mailbox?: string };
+        const query = mailListQuerySchema.parse(request.query);
+        const result = await mailCacheService.listMails(parseInt(id), query);
+        return { success: true, data: result };
+    });
 
-        const emailData = await emailService.getById(parseInt(id), true);
+    // 手动拉取最新邮件并写入本地缓存 (管理员专用)
+    fastify.post('/:id/mails/sync', async (request) => {
+        const { id } = request.params as { id: string };
+        const body = mailSyncBodySchema.parse(request.body);
+        const result = await mailCacheService.syncMailbox(parseInt(id), {
+            mailbox: body?.mailbox,
+            limit: body?.limit || 100,
+            trigger: 'MANUAL',
+            markInsertedAsNew: true,
+        });
+        request.log.info({
+            systemEvent: true,
+            action: 'email.mail_sync',
+            actorId: request.user?.id ?? null,
+            actorUsername: request.user?.username ?? null,
+            emailId: result.emailId,
+            email: result.email,
+            mailbox: result.mailbox,
+            inserted: result.inserted,
+            updated: result.updated,
+            method: result.method,
+        }, '手动拉取最新邮件');
+        return { success: true, data: result };
+    });
 
-        const credentials = {
-            id: emailData.id,
-            email: emailData.email,
-            clientId: emailData.clientId,
-            refreshToken: emailData.refreshToken!,
-            autoAssigned: false,
-            fetchStrategy: emailData.group?.fetchStrategy,
-        };
-
-        const mails = await mailService.getEmails(credentials, { mailbox: mailbox || 'INBOX' });
-        await emailService.touchLastCheckAt(emailData.id);
-        return { success: true, data: mails };
+    // 邮件详情从本地缓存读取正文 (管理员专用)
+    fastify.get('/:id/mails/:mailId', async (request) => {
+        const { id, mailId } = request.params as { id: string; mailId: string };
+        const result = await mailCacheService.getMailDetail(parseInt(id), parseInt(mailId));
+        return { success: true, data: result };
     });
 
     // 清空邮箱 (管理员专用)
@@ -164,6 +224,9 @@ const emailRoutes: FastifyPluginAsync = async (fastify) => {
 
         const result = await mailService.processMailbox(credentials, { mailbox: mailbox || 'INBOX' });
         await emailService.touchLastCheckAt(emailData.id);
+        if (result.status === 'success') {
+            await mailCacheService.deleteMailbox(emailData.id, mailbox || 'INBOX');
+        }
         request.log.info({
             systemEvent: true,
             action: 'email.clear_mailbox',

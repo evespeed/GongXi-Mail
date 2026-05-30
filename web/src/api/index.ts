@@ -514,15 +514,40 @@ export const emailApi = {
             invalidatePrefixes: ['/admin/emails', '/admin/email-groups', '/admin/api-keys', '/admin/dashboard/stats'],
         }),
 
-    // 查看邮件 (管理员专用)
-    viewMails: <T = Record<string, unknown>>(id: number, mailbox?: string) =>
-        requestGet<{ messages: T[] }>(`/admin/emails/${id}/mails`, { params: { mailbox } }),
+    // 查看本地缓存邮件摘要 (管理员专用)
+    viewMails: <T = Record<string, unknown>>(id: number, mailbox?: string, params?: { page?: number; pageSize?: number }) =>
+        requestGet<{ mailbox: string; page: number; pageSize: number; total: number; messages: T[] }>(
+            `/admin/emails/${id}/mails`,
+            { params: { mailbox, ...params } }
+        ),
+
+    // 从微软/IMAP 拉取最新邮件并写入本地缓存
+    syncMails: (id: number, mailbox?: string) =>
+        requestPost<{
+            emailId: number;
+            email: string;
+            mailbox: string;
+            method: string;
+            fetched: number;
+            inserted: number;
+            updated: number;
+            startedAt: string;
+            completedAt: string;
+        }, { mailbox?: string; limit?: number }>(
+            `/admin/emails/${id}/mails/sync`,
+            { mailbox, limit: 100 },
+            { invalidatePrefixes: [`/admin/emails/${id}/mails`, '/admin/emails'] }
+        ),
+
+    // 查看本地缓存邮件正文 (管理员专用)
+    getMailDetail: <T = Record<string, unknown>>(id: number, mailId: number) =>
+        requestGet<T>(`/admin/emails/${id}/mails/${mailId}`),
 
     // 清空邮箱 (管理员专用)
     clearMailbox: (id: number, mailbox?: string) =>
         requestPost<{ deletedCount: number }, { mailbox?: string }>(`/admin/emails/${id}/clear`, {
             mailbox,
-        }),
+        }, { invalidatePrefixes: [`/admin/emails/${id}/mails`, '/admin/emails'] }),
 
     // Token 刷新
     refreshTokens: (groupId?: number) =>

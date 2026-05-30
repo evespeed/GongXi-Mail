@@ -93,8 +93,38 @@ model EmailAccount {
   group   EmailGroup?  @relation(fields: [groupId], references: [id], onDelete: SetNull)
   usages  EmailUsage[]
   apiLogs ApiLog[]
+  storedMails StoredMail[]
 
   @@map("email_accounts")
+}
+
+// ============================================
+// 本地邮件缓存
+// ============================================
+model StoredMail {
+  id                Int       @id @default(autoincrement())
+  emailAccountId    Int       @map("email_account_id")
+  mailbox           String    @db.VarChar(50)
+  providerMessageId String    @map("provider_message_id") @db.VarChar(255)
+  from              String?   @db.VarChar(500)
+  subject           String?   @db.VarChar(500)
+  bodyPreview       String?   @map("body_preview") @db.Text
+  text              String?   @db.Text
+  html              String?   @db.Text
+  sentAt            DateTime? @map("sent_at")
+  receivedAt        DateTime? @map("received_at")
+  firstFetchedAt    DateTime  @default(now()) @map("first_fetched_at")
+  lastFetchedAt     DateTime  @default(now()) @map("last_fetched_at")
+  isNew             Boolean   @default(true) @map("is_new")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+
+  emailAccount EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([emailAccountId, mailbox, providerMessageId])
+  @@index([emailAccountId, mailbox, sentAt])
+  @@index([emailAccountId, mailbox, lastFetchedAt])
+  @@map("stored_mails")
 }
 
 // ============================================
