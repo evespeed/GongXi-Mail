@@ -58,6 +58,7 @@ const MAIL_FETCH_STRATEGY_LABELS: Record<MailFetchStrategy, string> = {
 };
 
 const UNGROUPED_FILTER_VALUE = '__ungrouped__' as const;
+const VERIFICATION_CODE_EXPIRY_MINUTES = 10;
 type GroupFilterValue = number | typeof UNGROUPED_FILTER_VALUE;
 
 interface EmailGroup {
@@ -153,6 +154,31 @@ const copyTextToClipboard = async (text: string) => {
     document.body.removeChild(textarea);
 };
 
+const selectElementText = (element: HTMLElement) => {
+    const selection = window.getSelection();
+    if (!selection) {
+        return;
+    }
+
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    selection.removeAllRanges();
+    selection.addRange(range);
+};
+
+const isVerificationMailExpired = (mailAt?: string | null, now = dayjs()) => {
+    if (!mailAt) {
+        return false;
+    }
+
+    const sentAt = dayjs(mailAt);
+    if (!sentAt.isValid()) {
+        return false;
+    }
+
+    return Math.abs(now.diff(sentAt, 'minute', true)) >= VERIFICATION_CODE_EXPIRY_MINUTES;
+};
+
 const EmailsPage: React.FC = () => {
     const [loading, setLoading] = useState(false);
     const [data, setData] = useState<EmailAccount[]>([]);
@@ -198,6 +224,7 @@ const EmailsPage: React.FC = () => {
     const [refreshingTokenIds, setRefreshingTokenIds] = useState<Set<number>>(new Set());
     const [checkingEmailIds, setCheckingEmailIds] = useState<Set<number>>(new Set());
     const [batchRefreshing, setBatchRefreshing] = useState(false);
+    const [verificationClock, setVerificationClock] = useState(() => Date.now());
     const latestListRequestIdRef = useRef(0);
 
     const toOptionalNumber = (value: unknown): number | undefined => {
@@ -267,6 +294,13 @@ const EmailsPage: React.FC = () => {
         }, 0);
         return () => window.clearTimeout(timer);
     }, [fetchData]);
+
+    useEffect(() => {
+        const timer = window.setInterval(() => {
+            setVerificationClock(Date.now());
+        }, 60 * 1000);
+        return () => window.clearInterval(timer);
+    }, []);
 
     const handleCreate = () => {
         setEditingId(null);
@@ -571,11 +605,15 @@ const EmailsPage: React.FC = () => {
             }
 
             if (res.data.status === 'CODE_FOUND' && res.data.code) {
+                const expired = isVerificationMailExpired(res.data.mailSentAt);
                 try {
                     await copyTextToClipboard(res.data.code);
                     message.success(`验证码 ${res.data.code} 已复制到剪切板`);
                 } catch {
                     message.warning(`验证码 ${res.data.code} 已识别，复制到剪切板失败`);
+                }
+                if (expired) {
+                    message.warning('验证码已过期');
                 }
                 fetchData();
                 return;
@@ -839,22 +877,49 @@ const EmailsPage: React.FC = () => {
             title: '验证码',
             key: 'verification',
             width: 180,
-            render: (_: unknown, record: EmailAccount) => (
-                <Space direction="vertical" size={0}>
-                    {record.lastVerificationCode ? (
-                        <Typography.Text code>{record.lastVerificationCode}</Typography.Text>
-                    ) : (
-                        <Typography.Text type="secondary">-</Typography.Text>
-                    )}
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                        {record.lastVerificationMailAt
-                            ? `发送：${dayjs(record.lastVerificationMailAt).format('YYYY-MM-DD HH:mm')}`
-                            : record.lastVerificationCheckedAt
-                                ? `检查：${dayjs(record.lastVerificationCheckedAt).format('YYYY-MM-DD HH:mm')}`
-                                : ''}
-                    </Typography.Text>
-                </Space>
-            ),
+            render: (_: unknown, record: EmailAccount) => {
+                const expired = isVerificationMailExpired(record.lastVerificationMailAt, dayjs(verificationClock));
+                const timestampText = record.lastVerificationMailAt
+                    ? `发送：${dayjs(record.lastVerificationMailAt).format('YYYY-MM-DD HH:mm')}`
+                    : record.lastVerificationCheckedAt
+                        ? `检查：${dayjs(record.lastVerificationCheckedAt).format('YYYY-MM-DD HH:mm')}`
+                        : '';
+
+                return (
+                    <Space direction="vertical" size={0}>
+                        {record.lastVerificationCode ? (
+                            <Typography.Text
+                                code
+                                type={expired ? 'danger' : undefined}
+                                style={{ cursor: 'copy' }}
+                                onDoubleClick={async (event) => {
+                                    event.stopPropagation();
+                                    selectElementText(event.currentTarget);
+                                    try {
+                                        await copyTextToClipboard(record.lastVerificationCode!);
+                                        message.success('验证码已复制');
+                                    } catch {
+                                        message.warning('复制验证码失败');
+                                    }
+                                    if (expired) {
+                                        message.warning('验证码已过期');
+                                    }
+                                }}
+                            >
+                                {record.lastVerificationCode}
+                            </Typography.Text>
+                        ) : (
+                            <Typography.Text type="secondary">-</Typography.Text>
+                        )}
+                        <Typography.Text
+                            type={expired ? 'danger' : 'secondary'}
+                            style={{ fontSize: 12 }}
+                        >
+                            {timestampText}
+                        </Typography.Text>
+                    </Space>
+                );
+            },
         },
         {
             title: '创建时间',
@@ -928,7 +993,7 @@ const EmailsPage: React.FC = () => {
                 );
             },
         },
-    ], [checkingEmailIds, handleCheckVerification, handleDelete, handleEdit, handleRefreshToken, handleViewMails, mailLoading, refreshingTokenIds]);
+    ], [checkingEmailIds, handleCheckVerification, handleDelete, handleEdit, handleRefreshToken, handleViewMails, mailLoading, refreshingTokenIds, verificationClock]);
 
     const rowSelection = useMemo(
         () => ({
