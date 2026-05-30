@@ -31,6 +31,7 @@ import {
     GroupOutlined,
     SyncOutlined,
     CheckCircleOutlined,
+    CopyOutlined,
 } from '@ant-design/icons';
 import { emailApi, groupApi } from '../../api';
 import { getErrorMessage } from '../../utils/error';
@@ -766,13 +767,32 @@ const EmailsPage: React.FC = () => {
             title: '邮箱',
             dataIndex: 'email',
             key: 'email',
-            ellipsis: true,
-        },
-        {
-            title: '客户端 ID',
-            dataIndex: 'clientId',
-            key: 'clientId',
-            ellipsis: true,
+            width: 360,
+            render: (email: string) => (
+                <div className="email-account-cell">
+                    <Text className="email-account-address" ellipsis={{ tooltip: email }}>
+                        {email}
+                    </Text>
+                    <Tooltip title="复制邮箱">
+                        <Button
+                            type="text"
+                            size="small"
+                            className="email-account-copy"
+                            aria-label={`复制邮箱 ${email}`}
+                            icon={<CopyOutlined />}
+                            onClick={async (event) => {
+                                event.stopPropagation();
+                                try {
+                                    await copyTextToClipboard(email);
+                                    message.success('邮箱已复制');
+                                } catch {
+                                    message.warning('复制邮箱失败');
+                                }
+                            }}
+                        />
+                    </Tooltip>
+                </div>
+            ),
         },
         {
             title: '分组',
@@ -914,6 +934,7 @@ const EmailsPage: React.FC = () => {
         () => ({
             selectedRowKeys,
             onChange: setSelectedRowKeys,
+            columnWidth: 48,
             getCheckboxProps: (record: EmailAccount) => ({
                 disabled: checkingEmailIds.has(record.id),
             }),
@@ -1128,6 +1149,7 @@ const EmailsPage: React.FC = () => {
                                 </div>
 
                                 <Table
+                                    className="email-account-table"
                                     columns={columns}
                                     dataSource={data}
                                     rowKey="id"
@@ -1135,7 +1157,7 @@ const EmailsPage: React.FC = () => {
                                     rowSelection={rowSelection}
                                     pagination={tablePagination}
                                     virtual
-                                    scroll={{ y: 560, x: 1200 }}
+                                    scroll={{ y: 560, x: 1080 }}
                                 />
                             </>
                         ),

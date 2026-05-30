@@ -36,3 +36,29 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #a8a8a8;
 }
+
+.email-account-table .ant-table-thead > tr > th,
+.email-account-table .ant-table-tbody > tr > td {
+  vertical-align: middle;
+}
+
+.email-account-table .ant-table-selection-column {
+  width: 48px;
+  min-width: 48px;
+}
+
+.email-account-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.email-account-address {
+  flex: 1;
+  min-width: 0;
+}
+
+.email-account-copy {
+  flex: 0 0 auto;
+}
