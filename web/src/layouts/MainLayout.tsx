@@ -135,10 +135,10 @@ const MainLayout: React.FC = () => {
                                 fontWeight: 600,
                             }}
                         >
-                            GX
+                            HMM
                         </div>
                         {!collapsed && (
-                            <Text strong style={{ fontSize: 16 }}>廾匸邮箱</Text>
+                            <Text strong style={{ fontSize: 16 }}>Hot Mail Manager</Text>
                         )}
                     </Space>
                 </div>
