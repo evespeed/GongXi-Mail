@@ -177,7 +177,9 @@ const EmailsPage: React.FC = () => {
     const mailLoadingRef = useRef(false);
     const [currentEmail, setCurrentEmail] = useState<string>('');
     const [currentEmailId, setCurrentEmailId] = useState<number | null>(null);
+    const [currentEmailGroupValue, setCurrentEmailGroupValue] = useState<GroupFilterValue>(UNGROUPED_FILTER_VALUE);
     const [currentMailbox, setCurrentMailbox] = useState<string>('INBOX');
+    const [mailGroupUpdating, setMailGroupUpdating] = useState(false);
     const [emailDetailVisible, setEmailDetailVisible] = useState(false);
     const [emailDetailContent, setEmailDetailContent] = useState<string>('');
     const [emailDetailSubject, setEmailDetailSubject] = useState<string>('');
@@ -474,6 +476,7 @@ const EmailsPage: React.FC = () => {
 
         setCurrentEmail(record.email);
         setCurrentEmailId(record.id);
+        setCurrentEmailGroupValue(record.groupId ?? UNGROUPED_FILTER_VALUE);
         setCurrentMailbox(mailbox);
         setMailList([]);
         setMailTotal(0);
@@ -629,6 +632,28 @@ const EmailsPage: React.FC = () => {
             setEmailDetailLoading(false);
         }
     };
+
+    const handleMailGroupChange = useCallback(async (value: GroupFilterValue) => {
+        if (!currentEmailId || mailGroupUpdating) return;
+
+        setMailGroupUpdating(true);
+        try {
+            const groupId = value === UNGROUPED_FILTER_VALUE ? null : value;
+            const res = await emailApi.update(currentEmailId, { groupId });
+            if (res.code === 200) {
+                setCurrentEmailGroupValue(value);
+                message.success(value === UNGROUPED_FILTER_VALUE ? '已设为未分组' : '邮箱分组已更新');
+                fetchData();
+                fetchGroups();
+            } else {
+                message.error(res.message || '更新分组失败');
+            }
+        } catch (err: unknown) {
+            message.error(getErrorMessage(err, '更新分组失败'));
+        } finally {
+            setMailGroupUpdating(false);
+        }
+    }, [currentEmailId, fetchData, fetchGroups, mailGroupUpdating]);
 
     // ========================================
     // Group CRUD handlers
@@ -960,6 +985,14 @@ const EmailsPage: React.FC = () => {
         [groups]
     );
 
+    const mailGroupOptions = useMemo(
+        () => [
+            { value: UNGROUPED_FILTER_VALUE, label: '未分组' },
+            ...groupOptions,
+        ],
+        [groupOptions]
+    );
+
     // ========================================
     // Group table columns
     // ========================================
@@ -1257,7 +1290,7 @@ const EmailsPage: React.FC = () => {
                     width={1000}
                     styles={{ body: { padding: '16px 24px' } }}
                 >
-                    <Space style={{ marginBottom: 16 }}>
+                    <Space style={{ marginBottom: 16 }} wrap>
                         <Button type="primary" onClick={handleRefreshMails} loading={mailLoading} disabled={mailLoading}>
                             拉取最新邮件
                         </Button>
@@ -1267,6 +1300,17 @@ const EmailsPage: React.FC = () => {
                         >
                             <Button danger disabled={mailLoading}>清空</Button>
                         </Popconfirm>
+                        <Select
+                            value={currentEmailGroupValue}
+                            options={mailGroupOptions}
+                            onChange={(value: GroupFilterValue) => {
+                                void handleMailGroupChange(value);
+                            }}
+                            loading={mailGroupUpdating}
+                            disabled={mailGroupUpdating}
+                            style={{ width: 180 }}
+                            placeholder="修改分组"
+                        />
                         <span style={{ marginLeft: 16, color: '#888' }}>
                             本地共 {mailTotal} 封邮件
                         </span>
