@@ -1,4 +1,4 @@
-# GongXi Mail (廾匸邮箱)
+# Hot Mail
 
 使用 Microsoft OAuth2 进行邮箱收取的 API 服务。
 
