@@ -10,7 +10,7 @@ export const mailFetchStrategySchema = z.enum([
 export const createGroupSchema = z.object({
     name: z.string().min(1).max(50),
     description: z.string().max(255).optional(),
-    fetchStrategy: mailFetchStrategySchema.default('GRAPH_FIRST'),
+    fetchStrategy: mailFetchStrategySchema.default('IMAP_FIRST'),
 });
 
 export const updateGroupSchema = z.object({

@@ -3,6 +3,8 @@ import { decrypt } from '../../lib/crypto.js';
 import { AppError } from '../../plugins/error.js';
 import type { Prisma } from '@prisma/client';
 
+const DEFAULT_MAIL_FETCH_STRATEGY = 'IMAP_FIRST';
+
 interface ApiKeyScope {
     allowedGroupIds?: number[];
     allowedEmailIds?: number[];
@@ -147,7 +149,7 @@ export const poolService = {
         return {
             ...email,
             refreshToken: decrypt(email.refreshToken),
-            fetchStrategy: email.group?.fetchStrategy || 'GRAPH_FIRST',
+            fetchStrategy: email.group?.fetchStrategy || DEFAULT_MAIL_FETCH_STRATEGY,
         };
     },
 

@@ -4,6 +4,8 @@ import { AppError } from '../../plugins/error.js';
 import type { Prisma } from '@prisma/client';
 import type { CreateEmailInput, UpdateEmailInput, ListEmailInput, ImportEmailInput } from './email.schema.js';
 
+const DEFAULT_MAIL_FETCH_STRATEGY = 'IMAP_FIRST';
+
 export const emailService = {
     /**
      * 获取邮箱列表
@@ -118,7 +120,7 @@ export const emailService = {
             ...email,
             refreshToken: decrypt(email.refreshToken),
             password: email.password ? decrypt(email.password) : undefined,
-            fetchStrategy: email.group?.fetchStrategy || 'GRAPH_FIRST',
+            fetchStrategy: email.group?.fetchStrategy || DEFAULT_MAIL_FETCH_STRATEGY,
         };
     },
 

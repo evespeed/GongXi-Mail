@@ -7,22 +7,14 @@ WORKDIR /app
 COPY server/package*.json ./server/
 RUN cd server && npm install
 
-# Install dependencies for frontend
-COPY web/package*.json ./web/
-RUN cd web && npm install --legacy-peer-deps
-
 # Copy source code
 COPY server ./server
-COPY web ./web
 
 # Generate Prisma client
 RUN cd server && npx prisma generate
 
 # Build server
 RUN cd server && npm run build
-
-# Build frontend
-RUN cd web && npm run build
 
 # Production stage
 FROM node:20-alpine
@@ -36,7 +28,7 @@ COPY --from=builder /app/server/package.json ./server/
 COPY --from=builder /app/server/prisma ./server/prisma
 
 # Copy frontend build to public
-COPY --from=builder /app/web/dist ./public
+COPY web/dist ./public
 
 # Set working directory to server
 WORKDIR /app/server

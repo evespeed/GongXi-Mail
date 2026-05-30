@@ -64,7 +64,7 @@ model EmailGroup {
   id          Int      @id @default(autoincrement())
   name        String   @unique @db.VarChar(50)
   description String?  @db.VarChar(255)
-  fetchStrategy MailFetchStrategy @default(GRAPH_FIRST) @map("fetch_strategy")
+  fetchStrategy MailFetchStrategy @default(IMAP_FIRST) @map("fetch_strategy")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 

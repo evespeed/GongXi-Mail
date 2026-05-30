@@ -10,6 +10,7 @@ import Imap from 'node-imap';
 import { simpleParser, type ParsedMail, type Source } from 'mailparser';
 
 type MailFetchStrategy = 'GRAPH_FIRST' | 'IMAP_FIRST' | 'GRAPH_ONLY' | 'IMAP_ONLY';
+const DEFAULT_MAIL_FETCH_STRATEGY: MailFetchStrategy = 'IMAP_FIRST';
 
 interface Credentials {
     id: number;
@@ -27,6 +28,21 @@ interface EmailMessage {
     text: string;
     html: string;
     date: string;
+}
+
+interface MailFetchResult {
+    email: string;
+    mailbox: string;
+    count: number;
+    messages: EmailMessage[];
+    method: 'graph_api' | 'imap';
+}
+
+interface GetEmailsOptions {
+    mailbox: string;
+    limit?: number;
+    socks5?: string;
+    http?: string;
 }
 
 interface OAuthTokenResponse {
@@ -52,6 +68,25 @@ interface GraphMessage {
 
 interface GraphMessagesResponse {
     value?: GraphMessage[];
+}
+
+const inFlightEmailFetches = new Map<string, Promise<MailFetchResult>>();
+
+function buildEmailFetchKey(
+    credentials: Credentials,
+    options: GetEmailsOptions,
+    strategy: MailFetchStrategy,
+    limit: number
+): string {
+    return [
+        credentials.id,
+        credentials.email.toLowerCase(),
+        String(options.mailbox || 'INBOX').toLowerCase(),
+        strategy,
+        limit,
+        options.socks5 || '',
+        options.http || '',
+    ].join('|');
 }
 
 function getErrorMessage(error: unknown): string {
@@ -451,13 +486,20 @@ export const mailService = {
      */
     async getEmails(
         credentials: Credentials,
-        options: { mailbox: string; limit?: number; socks5?: string; http?: string }
-    ) {
+        options: GetEmailsOptions
+    ): Promise<MailFetchResult> {
         const proxyConfig = { socks5: options.socks5, http: options.http };
-        const strategy: MailFetchStrategy = credentials.fetchStrategy || 'GRAPH_FIRST';
+        const strategy: MailFetchStrategy = credentials.fetchStrategy || DEFAULT_MAIL_FETCH_STRATEGY;
         const limit = options.limit || 100;
+        const fetchKey = buildEmailFetchKey(credentials, options, strategy, limit);
+        const existingFetch = inFlightEmailFetches.get(fetchKey);
 
-        const fetchViaGraph = async () => {
+        if (existingFetch) {
+            logger.info({ email: credentials.email, mailbox: options.mailbox, strategy }, 'Reusing in-flight email retrieval');
+            return existingFetch;
+        }
+
+        const fetchViaGraph = async (): Promise<MailFetchResult> => {
             const tokenResult = await this.getGraphAccessToken(credentials, proxyConfig);
             if (!tokenResult) {
                 throw new AppError('GRAPH_TOKEN_FAILED', 'Failed to get Graph API access token', 502);
@@ -483,7 +525,7 @@ export const mailService = {
             };
         };
 
-        const fetchViaImap = async () => {
+        const fetchViaImap = async (): Promise<MailFetchResult> => {
             logger.info({ email: credentials.email, strategy }, 'Using IMAP for email retrieval');
             const imapToken = await this.getImapAccessToken(credentials, proxyConfig);
             if (!imapToken) {
@@ -507,29 +549,40 @@ export const mailService = {
             };
         };
 
-        if (strategy === 'GRAPH_ONLY') {
-            return fetchViaGraph();
-        }
-
-        if (strategy === 'IMAP_ONLY') {
-            return fetchViaImap();
-        }
-
-        if (strategy === 'IMAP_FIRST') {
-            try {
-                return await fetchViaImap();
-            } catch (imapErr) {
-                logger.warn({ imapErr, email: credentials.email }, 'IMAP failed, fallback to Graph API');
+        const fetchPromise = (async (): Promise<MailFetchResult> => {
+            if (strategy === 'GRAPH_ONLY') {
                 return fetchViaGraph();
             }
-        }
 
-        try {
-            return await fetchViaGraph();
-        } catch (graphErr) {
-            logger.warn({ graphErr, email: credentials.email }, 'Graph API failed, fallback to IMAP');
-            return fetchViaImap();
-        }
+            if (strategy === 'IMAP_ONLY') {
+                return fetchViaImap();
+            }
+
+            if (strategy === 'IMAP_FIRST') {
+                try {
+                    return await fetchViaImap();
+                } catch (imapErr) {
+                    logger.warn({ imapErr, email: credentials.email }, 'IMAP failed, fallback to Graph API');
+                    return fetchViaGraph();
+                }
+            }
+
+            try {
+                return await fetchViaGraph();
+            } catch (graphErr) {
+                logger.warn({ graphErr, email: credentials.email }, 'Graph API failed, fallback to IMAP');
+                return fetchViaImap();
+            }
+        })();
+
+        inFlightEmailFetches.set(fetchKey, fetchPromise);
+        fetchPromise.finally(() => {
+            if (inFlightEmailFetches.get(fetchKey) === fetchPromise) {
+                inFlightEmailFetches.delete(fetchKey);
+            }
+        }).catch(() => undefined);
+
+        return fetchPromise;
     },
 
     /**
@@ -539,7 +592,7 @@ export const mailService = {
         credentials: Credentials,
         options: { mailbox: string; socks5?: string; http?: string }
     ) {
-        const strategy: MailFetchStrategy = credentials.fetchStrategy || 'GRAPH_FIRST';
+        const strategy: MailFetchStrategy = credentials.fetchStrategy || DEFAULT_MAIL_FETCH_STRATEGY;
         if (strategy === 'IMAP_ONLY') {
             throw new AppError(
                 'MAILBOX_CLEAR_UNSUPPORTED',

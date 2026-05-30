@@ -5,6 +5,8 @@ node_modules
 # Build outputs
 dist
 **/dist
+!web/dist
+!web/dist/**
 
 # Development files
 .git

@@ -39,8 +39,8 @@ const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Dragger } = Upload;
 const MAIL_FETCH_STRATEGY_OPTIONS = [
-    { value: 'GRAPH_FIRST', label: 'Graph 优先（失败回退 IMAP）' },
     { value: 'IMAP_FIRST', label: 'IMAP 优先（失败回退 Graph）' },
+    { value: 'GRAPH_FIRST', label: 'Graph 优先（失败回退 IMAP）' },
     { value: 'GRAPH_ONLY', label: '仅 Graph' },
     { value: 'IMAP_ONLY', label: '仅 IMAP' },
 ] as const;
@@ -114,6 +114,7 @@ const EmailsPage: React.FC = () => {
     const [importGroupId, setImportGroupId] = useState<number | undefined>(undefined);
     const [mailList, setMailList] = useState<MailItem[]>([]);
     const [mailLoading, setMailLoading] = useState(false);
+    const mailLoadingRef = useRef(false);
     const [currentEmail, setCurrentEmail] = useState<string>('');
     const [currentEmailId, setCurrentEmailId] = useState<number | null>(null);
     const [currentMailbox, setCurrentMailbox] = useState<string>('INBOX');
@@ -354,22 +355,35 @@ const EmailsPage: React.FC = () => {
     };
 
     const loadMails = useCallback(async (emailId: number, mailbox: string, showSuccessToast: boolean = false) => {
-        setMailLoading(true);
-        const result = await requestData<{ messages: MailItem[] }>(
-            () => emailApi.viewMails(emailId, mailbox),
-            '获取邮件失败'
-        );
-        if (result) {
-            setMailList(result.messages || []);
-            fetchData();
-            if (showSuccessToast) {
-                message.success('刷新成功');
-            }
+        if (mailLoadingRef.current) {
+            return;
         }
-        setMailLoading(false);
+
+        mailLoadingRef.current = true;
+        setMailLoading(true);
+        try {
+            const result = await requestData<{ messages: MailItem[] }>(
+                () => emailApi.viewMails(emailId, mailbox),
+                '获取邮件失败'
+            );
+            if (result) {
+                setMailList(result.messages || []);
+                fetchData();
+                if (showSuccessToast) {
+                    message.success('刷新成功');
+                }
+            }
+        } finally {
+            mailLoadingRef.current = false;
+            setMailLoading(false);
+        }
     }, [fetchData]);
 
     const handleViewMails = useCallback(async (record: EmailAccount, mailbox: string) => {
+        if (mailLoadingRef.current) {
+            return;
+        }
+
         setCurrentEmail(record.email);
         setCurrentEmailId(record.id);
         setCurrentMailbox(mailbox);
@@ -378,7 +392,7 @@ const EmailsPage: React.FC = () => {
     }, [loadMails]);
 
     const handleRefreshMails = async () => {
-        if (!currentEmailId) return;
+        if (!currentEmailId || mailLoadingRef.current) return;
         await loadMails(currentEmailId, currentMailbox, true);
     };
 
@@ -450,7 +464,7 @@ const EmailsPage: React.FC = () => {
     const handleCreateGroup = () => {
         setEditingGroupId(null);
         groupForm.resetFields();
-        groupForm.setFieldsValue({ fetchStrategy: 'GRAPH_FIRST' });
+        groupForm.setFieldsValue({ fetchStrategy: 'IMAP_FIRST' });
         setGroupModalVisible(true);
     };
 
@@ -630,6 +644,7 @@ const EmailsPage: React.FC = () => {
                             type="text"
                             icon={<MailOutlined />}
                             onClick={() => handleViewMails(record, 'INBOX')}
+                            disabled={mailLoading || record.status === 'DISABLED'}
                         />
                     </Tooltip>
                     <Tooltip title="垃圾箱">
@@ -637,6 +652,7 @@ const EmailsPage: React.FC = () => {
                             type="text"
                             icon={<DeleteOutlined style={{ color: '#faad14' }} />}
                             onClick={() => handleViewMails(record, 'Junk')}
+                            disabled={mailLoading || record.status === 'DISABLED'}
                         />
                     </Tooltip>
                     <Tooltip title="编辑">
@@ -657,7 +673,7 @@ const EmailsPage: React.FC = () => {
                 </Space>
             ),
         },
-    ], [handleDelete, handleEdit, handleRefreshToken, handleViewMails, refreshingTokenIds]);
+    ], [handleDelete, handleEdit, handleRefreshToken, handleViewMails, mailLoading, refreshingTokenIds]);
 
     const rowSelection = useMemo(
         () => ({
@@ -1022,14 +1038,14 @@ const EmailsPage: React.FC = () => {
                     styles={{ body: { padding: '16px 24px' } }}
                 >
                     <Space style={{ marginBottom: 16 }}>
-                        <Button type="primary" onClick={handleRefreshMails} loading={mailLoading}>
+                        <Button type="primary" onClick={handleRefreshMails} loading={mailLoading} disabled={mailLoading}>
                             收取新邮件
                         </Button>
                         <Popconfirm
                             title={`确定要清空${currentMailbox === 'INBOX' ? '收件箱' : '垃圾箱'}的所有邮件吗？`}
                             onConfirm={handleClearMailbox}
                         >
-                            <Button danger>清空</Button>
+                            <Button danger disabled={mailLoading}>清空</Button>
                         </Popconfirm>
                         <span style={{ marginLeft: 16, color: '#888' }}>
                             共 {mailList.length} 封邮件
